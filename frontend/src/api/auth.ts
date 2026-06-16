@@ -20,12 +20,20 @@ export interface TokenResponse {
   user: User
 }
 
+export interface TwoFAChallenge {
+  requires_2fa: true
+  pre_token: string
+}
+
 export const authApi = {
   register: (name: string, email: string, password: string) =>
     client.post<TokenResponse>('/auth/register', { name, email, password }),
 
   login: (email: string, password: string) =>
-    client.post<TokenResponse>('/auth/login', { email, password }),
+    client.post<TokenResponse | TwoFAChallenge>('/auth/login', { email, password }),
+
+  verify2fa: (pre_token: string, code: string) =>
+    client.post<TokenResponse>(`/auth/2fa/verify?pre_token=${encodeURIComponent(pre_token)}&code=${encodeURIComponent(code)}`),
 
   getMe: () => client.get<User>('/auth/me'),
 

@@ -74,13 +74,11 @@ def login(data: UserLogin, db: Session = Depends(get_db)):
     # Track last login
     user.last_login_at = datetime.now(timezone.utc)
     db.commit()
-    # If 2FA is enabled, return a short-lived pre-auth token instead of full tokens
+    # If 2FA is enabled, return a challenge response instead of full tokens.
+    # The frontend must follow up with POST /auth/2fa/verify.
     if user.totp_enabled and _PYOTP_AVAILABLE:
         pre_token = create_purpose_token(user.id, "pre2fa", timedelta(minutes=5))
-        raise HTTPException(
-            status_code=202,
-            detail={"requires_2fa": True, "pre_token": pre_token},
-        )
+        return {"requires_2fa": True, "pre_token": pre_token}
     access_token = create_access_token({"sub": str(user.id)})
     refresh_token = create_refresh_token({"sub": str(user.id)})
     return TokenResponse(access_token=access_token, refresh_token=refresh_token, user=UserOut.model_validate(user))
@@ -186,7 +184,7 @@ def resend_verification(db: Session = Depends(get_db), current_user: User = Depe
 # ── 2FA endpoints ─────────────────────────────────────────────────────────
 
 @router.get("/2fa/setup")
-def setup_2fa(current_user: User = Depends(get_current_user)):
+def setup_2fa(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     if not _PYOTP_AVAILABLE:
         raise HTTPException(status_code=503, detail="2FA not available: pyotp not installed")
     if current_user.totp_enabled:
@@ -194,15 +192,8 @@ def setup_2fa(current_user: User = Depends(get_current_user)):
     secret = pyotp.random_base32()
     totp = pyotp.TOTP(secret)
     provisioning_uri = totp.provisioning_uri(name=current_user.email, issuer_name="Uptime")
-    # Store secret temporarily in the user record (not yet enabled)
-    from database import SessionLocal
-    db = SessionLocal()
-    try:
-        u = db.query(User).filter(User.id == current_user.id).first()
-        u.totp_secret = secret
-        db.commit()
-    finally:
-        db.close()
+    current_user.totp_secret = secret
+    db.commit()
     return {"secret": secret, "otpauth_uri": provisioning_uri}
 
 

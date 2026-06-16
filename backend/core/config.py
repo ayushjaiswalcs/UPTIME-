@@ -1,6 +1,10 @@
 from pydantic_settings import BaseSettings
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from typing import List
+
+# Hardcoded defaults that must never be used in production. They exist only so
+# the app boots in local dev; APP_ENV=production rejects them (see validator).
+_INSECURE_SECRETS = {"supersecretkey-change-in-production", "local-dev-secret-key-not-for-production"}
 
 
 class Settings(BaseSettings):
@@ -31,6 +35,14 @@ class Settings(BaseSettings):
     # App
     APP_NAME: str = "Uptime"
     APP_ENV: str = "development"  # development | production
+    # Monitoring engine controls.
+    # Run the in-process asyncio engine? Disable when a separate Celery worker
+    # owns checks, otherwise both run and every monitor is checked twice.
+    ENABLE_INPROCESS_MONITOR: bool = True
+    # Allow monitors that target private/loopback/link-local addresses. Safe for
+    # local dev; MUST be False in a multi-tenant deployment to prevent SSRF
+    # (e.g. users probing 169.254.169.254 cloud metadata or internal services).
+    ALLOW_PRIVATE_TARGETS: bool = True
 
     @field_validator("DATABASE_URL")
     @classmethod
@@ -38,6 +50,22 @@ class Settings(BaseSettings):
         if value.startswith("sqlite"):
             raise ValueError("SQLite is disabled. Set DATABASE_URL to a PostgreSQL connection string.")
         return value
+
+    @model_validator(mode="after")
+    def enforce_production_hardening(self):
+        if self.APP_ENV == "production":
+            if self.SECRET_KEY in _INSECURE_SECRETS or len(self.SECRET_KEY) < 32:
+                raise ValueError(
+                    "SECRET_KEY must be a strong, unique value (>=32 chars) in production. "
+                    "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(48))\""
+                )
+            if self.ALLOW_PRIVATE_TARGETS:
+                # Not fatal, but loudly discouraged: leaving this on in prod is an SSRF vector.
+                import logging
+                logging.getLogger("uptime.config").warning(
+                    "ALLOW_PRIVATE_TARGETS=True in production — monitors can reach internal hosts (SSRF risk)."
+                )
+        return self
 
     class Config:
         env_file = ".env"

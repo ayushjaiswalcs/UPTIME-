@@ -5,7 +5,8 @@ import { tokens } from '../api/tokens'
 interface AuthContextType {
   user: User | null
   loading: boolean
-  login: (email: string, password: string, remember?: boolean) => Promise<void>
+  login: (email: string, password: string, remember?: boolean) => Promise<{ requires_2fa: true; pre_token: string } | void>
+  verify2fa: (pre_token: string, code: string, remember?: boolean) => Promise<void>
   register: (name: string, email: string, password: string) => Promise<void>
   logout: () => void
   updateUser: (u: User) => void
@@ -31,6 +32,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = useCallback(async (email: string, password: string, remember = true) => {
     const { data } = await authApi.login(email, password)
+    if ('requires_2fa' in data) {
+      return data
+    }
+    tokens.save(data.access_token, data.refresh_token, remember)
+    setUser(data.user)
+  }, [])
+
+  const verify2fa = useCallback(async (pre_token: string, code: string, remember = true) => {
+    const { data } = await authApi.verify2fa(pre_token, code)
     tokens.save(data.access_token, data.refresh_token, remember)
     setUser(data.user)
   }, [])
@@ -55,7 +65,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const updateUser = useCallback((u: User) => setUser(u), [])
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout, updateUser, refreshUser }}>
+    <AuthContext.Provider value={{ user, loading, login, verify2fa, register, logout, updateUser, refreshUser }}>
       {children}
     </AuthContext.Provider>
   )

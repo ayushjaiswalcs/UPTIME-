@@ -13,6 +13,9 @@ class MonitorCreate(BaseModel):
     expected_status_code: int = 200
     custom_headers: Optional[str] = None
     request_body: Optional[str] = None
+    keyword: Optional[str] = None
+    dns_record_type: Optional[str] = None
+    alert_threshold: int = 1
 
 
 class MonitorUpdate(BaseModel):
@@ -25,6 +28,9 @@ class MonitorUpdate(BaseModel):
     custom_headers: Optional[str] = None
     request_body: Optional[str] = None
     is_paused: Optional[bool] = None
+    keyword: Optional[str] = None
+    dns_record_type: Optional[str] = None
+    alert_threshold: Optional[int] = None
 
 
 class MonitorOut(BaseModel):
@@ -40,6 +46,10 @@ class MonitorOut(BaseModel):
     current_status: str
     is_paused: bool
     uptime_percentage: str
+    keyword: Optional[str] = None
+    dns_record_type: Optional[str] = None
+    alert_threshold: int = 1
+    failure_count: int = 0
     created_at: datetime
     last_checked_at: Optional[datetime] = None
 

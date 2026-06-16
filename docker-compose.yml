@@ -44,6 +44,9 @@ services:
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       FROM_EMAIL: ${FROM_EMAIL:-noreply@uptime.io}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost}
+      # The Celery worker+beat own monitoring checks in the Docker stack.
+      # Disable the in-process engine here so monitors aren't checked twice.
+      ENABLE_INPROCESS_MONITOR: "false"
     ports:
       - "8000:8000"
     depends_on:

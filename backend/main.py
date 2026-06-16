@@ -20,13 +20,20 @@ logging.basicConfig(level=logging.INFO)
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     # Start the in-process monitoring engine (replaces Celery for local/single-process runs).
-    monitor_task = asyncio.create_task(monitoring_loop())
+    # Skip it when a dedicated Celery worker owns checks (ENABLE_INPROCESS_MONITOR=false),
+    # otherwise checks run twice and incidents double-fire.
+    monitor_task = None
+    if settings.ENABLE_INPROCESS_MONITOR:
+        monitor_task = asyncio.create_task(monitoring_loop())
+    else:
+        logging.getLogger("uptime").info("In-process monitor disabled (ENABLE_INPROCESS_MONITOR=false)")
     yield
-    monitor_task.cancel()
-    try:
-        await monitor_task
-    except asyncio.CancelledError:
-        pass
+    if monitor_task:
+        monitor_task.cancel()
+        try:
+            await monitor_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(

@@ -13,6 +13,10 @@ export interface Monitor {
   current_status: string
   is_paused: boolean
   uptime_percentage: string
+  keyword: string | null
+  dns_record_type: string | null
+  alert_threshold: number
+  failure_count: number
   created_at: string
   last_checked_at: string | null
 }
@@ -37,6 +41,9 @@ export interface MonitorCreate {
   expected_status_code: number
   custom_headers?: string
   request_body?: string
+  keyword?: string
+  dns_record_type?: string
+  alert_threshold?: number
 }
 
 export const monitorsApi = {

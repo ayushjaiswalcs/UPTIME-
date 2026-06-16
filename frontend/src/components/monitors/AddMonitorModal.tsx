@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Globe, Wifi, Radio, Shield, Search, Server, Zap } from 'lucide-react'
+import { Globe, Wifi, Radio, Shield, Search, Server } from 'lucide-react'
 import Modal from '../ui/Modal'
 import { monitorsApi, type MonitorCreate } from '../../api/monitors'
 import { useQueryClient } from '@tanstack/react-query'
@@ -24,17 +24,11 @@ const INTERVALS = [
 const HTTP_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'PATCH']
 const DNS_RECORD_TYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT']
 
-interface ExtendedMonitorCreate extends MonitorCreate {
-  keyword?: string
-  dns_record_type?: string
-  alert_threshold?: number
-}
-
 interface Props { isOpen: boolean; onClose: () => void }
 
 export default function AddMonitorModal({ isOpen, onClose }: Props) {
   const qc = useQueryClient()
-  const [form, setForm] = useState<ExtendedMonitorCreate>({
+  const [form, setForm] = useState<MonitorCreate>({
     monitor_name: '',
     target_url: '',
     monitor_type: 'http',
@@ -52,11 +46,11 @@ export default function AddMonitorModal({ isOpen, onClose }: Props) {
     setError('')
     setLoading(true)
     try {
-      await monitorsApi.create(form as MonitorCreate)
+      await monitorsApi.create(form)
       qc.invalidateQueries({ queryKey: ['monitors'] })
       qc.invalidateQueries({ queryKey: ['dashboard-stats'] })
       onClose()
-      setForm({ monitor_name: '', target_url: '', monitor_type: 'http', interval: 300, timeout: 10, http_method: 'GET', expected_status_code: 200, alert_threshold: 1 })
+      setForm({ monitor_name: '', target_url: '', monitor_type: 'http', interval: 300, timeout: 10, http_method: 'GET', expected_status_code: 200, alert_threshold: 1, keyword: '', dns_record_type: 'A' })
     } catch (err: any) {
       setError(err.response?.data?.detail || 'Failed to create monitor')
     } finally {

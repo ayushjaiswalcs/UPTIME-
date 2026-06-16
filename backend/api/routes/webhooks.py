@@ -46,6 +46,9 @@ def update_webhook(wh_id: int, data: WebhookUpdate, db: Session = Depends(get_db
     wh = _get_wh(wh_id, current_user.id, db)
     for field, value in data.model_dump(exclude_none=True).items():
         if field == "events":
+            invalid = [e for e in value if e not in VALID_EVENTS]
+            if invalid:
+                raise HTTPException(status_code=422, detail=f"Invalid events: {invalid}")
             wh.events = json.dumps(value)
         else:
             setattr(wh, field, value)

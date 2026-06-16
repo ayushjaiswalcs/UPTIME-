@@ -12,6 +12,7 @@ Supported monitor types: http, tcp, ssl, ping, dns, keyword
 import asyncio
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import socket
@@ -23,6 +24,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from core.config import settings
 from database import SessionLocal
 from models.monitor import Monitor
 from models.monitor_log import MonitorLog
@@ -178,8 +180,31 @@ def _check_dns(monitor: Monitor):
         return False, round((time.monotonic() - start) * 1000, 2), None, f"DNS check error: {str(exc)[:160]}"
 
 
+def _is_private_target(target: str) -> bool:
+    """Best-effort SSRF guard: resolve the host and flag private/loopback/
+    link-local/reserved addresses (e.g. 127.0.0.1, 10.x, 169.254.169.254)."""
+    parsed = urlparse(target if "//" in target else f"//{target}")
+    host = parsed.hostname or target
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        # Unresolvable — let the actual check report the failure normally.
+        return False
+    for info in infos:
+        addr = info[4][0]
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            continue
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            return True
+    return False
+
+
 def run_check(monitor: Monitor):
     """Return (is_up, response_time_ms, http_status, error_message)."""
+    if not settings.ALLOW_PRIVATE_TARGETS and _is_private_target(monitor.target_url):
+        return False, 0.0, None, "Target resolves to a private/internal address (blocked)"
     mtype = (monitor.monitor_type or "http").lower()
     if mtype == "tcp":
         return _check_tcp(monitor)
@@ -310,13 +335,14 @@ def check_monitor(monitor_id: int) -> None:
         _recalculate_uptime(db, monitor)
 
         threshold = _get_alert_threshold(monitor)
-        should_alert_down = not is_up and monitor.failure_count == threshold
-        should_alert_up = is_up and previous_status == "down"
 
-        if previous_status != "down" and not is_up and monitor.failure_count >= threshold:
+        # Trigger a new incident exactly when consecutive failures hit the threshold.
+        # Using == (not >=) means we fire once per outage: on the N-th failure.
+        # On subsequent failures failure_count > threshold so the condition stays False
+        # until the monitor recovers (resetting failure_count to 0).
+        if not is_up and monitor.failure_count == threshold:
             db.add(Incident(monitor_id=monitor.id, error_message=error, incident_status="ongoing", outage_start_time=now))
             db.flush()
-            # Dispatch notifications and webhooks
             _send_alerts(db, monitor, "down", error)
             _deliver_webhooks(db, monitor.user_id, "monitor.down", {
                 "event": "monitor.down",
