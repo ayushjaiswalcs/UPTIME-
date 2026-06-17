@@ -1,10 +1,16 @@
 import re
-from typing import List
+from datetime import datetime, timedelta, timezone
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from core.audit import log_action
 from core.deps import get_db, get_current_user
+from models.audit_log import AuditLog
+from models.incident import Incident
+from models.monitor import Monitor
+from models.monitor_log import MonitorLog
 from models.organization import Organization, TeamMember
 from models.user import User
 from schemas.organization import OrgCreate, OrgOut, OrgUpdate, MemberOut, InviteMember, UpdateMemberRole
@@ -37,6 +43,8 @@ def create_org(data: OrgCreate, db: Session = Depends(get_db), current_user: Use
     db.add(org)
     db.flush()
     db.add(TeamMember(org_id=org.id, user_id=current_user.id, role="owner"))
+    log_action(db, user_id=current_user.id, action="org.create", resource_type="organization",
+               resource_id=org.id, details={"name": data.name, "slug": data.slug})
     db.commit()
     db.refresh(org)
     return org
@@ -63,6 +71,8 @@ def update_org(org_id: int, data: OrgUpdate, db: Session = Depends(get_db), curr
 @router.delete("/{org_id}", status_code=204)
 def delete_org(org_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     org = _get_owned_org(org_id, current_user.id, db)
+    log_action(db, user_id=current_user.id, action="org.delete", resource_type="organization",
+               resource_id=org.id, details={"name": org.name})
     db.delete(org)
     db.commit()
 
@@ -92,6 +102,8 @@ def invite_member(org_id: int, data: InviteMember, db: Session = Depends(get_db)
     if exists:
         raise HTTPException(status_code=400, detail="User is already a member")
     db.add(TeamMember(org_id=org_id, user_id=target.id, role=data.role, invited_by=current_user.id))
+    log_action(db, user_id=current_user.id, action="org.member.invite", resource_type="organization",
+               resource_id=org_id, details={"invited_email": data.email, "role": data.role, "invited_user_id": target.id})
     db.commit()
     return {"message": f"{target.name} added to organization"}
 
@@ -102,7 +114,10 @@ def update_member_role(org_id: int, member_id: int, data: UpdateMemberRole, db: 
     member = db.query(TeamMember).filter(TeamMember.id == member_id, TeamMember.org_id == org_id).first()
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
+    old_role = member.role
     member.role = data.role
+    log_action(db, user_id=current_user.id, action="org.member.role_change", resource_type="team_member",
+               resource_id=member_id, details={"old_role": old_role, "new_role": data.role})
     db.commit()
     return {"role": member.role}
 
@@ -113,8 +128,243 @@ def remove_member(org_id: int, member_id: int, db: Session = Depends(get_db), cu
     member = db.query(TeamMember).filter(TeamMember.id == member_id, TeamMember.org_id == org_id).first()
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
+    log_action(db, user_id=current_user.id, action="org.member.remove", resource_type="team_member",
+               resource_id=member_id, details={"removed_user_id": member.user_id})
     db.delete(member)
     db.commit()
+
+
+# ── Analytics endpoints ────────────────────────────────────────────────────────
+
+@router.get("/{org_id}/stats")
+def get_org_stats(
+    org_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    High-level stats for an organisation:
+    total_monitors, active_monitors, down_monitors, total_members,
+    monthly_incidents, sla_score (avg uptime last 30d), avg_response_time.
+    """
+    _get_accessible_org(org_id, current_user.id, db)
+
+    member_user_ids = [
+        m.user_id
+        for m in db.query(TeamMember).filter(TeamMember.org_id == org_id).all()
+    ]
+
+    # Monitors in scope: org-assigned OR user-owned by org members
+    monitors = (
+        db.query(Monitor)
+        .filter(
+            (Monitor.org_id == org_id)
+            | (
+                (Monitor.org_id.is_(None))
+                & (Monitor.user_id.in_(member_user_ids))
+            )
+        )
+        .all()
+    )
+
+    total_monitors = len(monitors)
+    active_monitors = sum(1 for m in monitors if not m.is_paused and m.current_status != "paused")
+    down_monitors = sum(1 for m in monitors if m.current_status == "down")
+    total_members = len(member_user_ids)
+
+    since_30 = datetime.now(timezone.utc) - timedelta(days=30)
+    monitor_ids = [m.id for m in monitors]
+
+    monthly_incidents = (
+        db.query(Incident)
+        .filter(
+            Incident.monitor_id.in_(monitor_ids),
+            Incident.outage_start_time >= since_30,
+        )
+        .count()
+        if monitor_ids
+        else 0
+    )
+
+    # SLA score — average uptime over last 30 days across all monitors
+    sla_scores: list[float] = []
+    for mon in monitors:
+        logs = (
+            db.query(MonitorLog)
+            .filter(MonitorLog.monitor_id == mon.id, MonitorLog.checked_at >= since_30)
+            .all()
+        )
+        if logs:
+            up = sum(1 for l in logs if l.is_up)
+            sla_scores.append(up / len(logs) * 100)
+
+    sla_score = round(sum(sla_scores) / len(sla_scores), 4) if sla_scores else 100.0
+
+    # Avg response time
+    all_rt: list[float] = []
+    for mon in monitors:
+        logs = (
+            db.query(MonitorLog)
+            .filter(MonitorLog.monitor_id == mon.id, MonitorLog.checked_at >= since_30)
+            .all()
+        )
+        all_rt.extend(l.response_time for l in logs if l.response_time is not None)
+
+    avg_response_time = round(sum(all_rt) / len(all_rt), 2) if all_rt else 0.0
+
+    return {
+        "total_monitors": total_monitors,
+        "active_monitors": active_monitors,
+        "down_monitors": down_monitors,
+        "total_members": total_members,
+        "monthly_incidents": monthly_incidents,
+        "sla_score": sla_score,
+        "avg_response_time": avg_response_time,
+    }
+
+
+@router.get("/{org_id}/analytics")
+def get_org_analytics(
+    org_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Detailed analytics for the last 30 days:
+    - uptime_trend: daily uptime % per day
+    - incident_trend: daily incident count
+    - top_failing: top 5 monitors by incident count
+    - member_activity: audit log action count per member
+    """
+    _get_accessible_org(org_id, current_user.id, db)
+
+    member_user_ids = [
+        m.user_id
+        for m in db.query(TeamMember).filter(TeamMember.org_id == org_id).all()
+    ]
+
+    monitors = (
+        db.query(Monitor)
+        .filter(
+            (Monitor.org_id == org_id)
+            | (
+                (Monitor.org_id.is_(None))
+                & (Monitor.user_id.in_(member_user_ids))
+            )
+        )
+        .all()
+    )
+    monitor_ids = [m.id for m in monitors]
+    monitor_name_map = {m.id: m.monitor_name for m in monitors}
+
+    since_30 = datetime.now(timezone.utc) - timedelta(days=30)
+    now = datetime.now(timezone.utc)
+
+    # ── uptime_trend: last 30 days, one data point per day ─────────────────
+    uptime_trend: list[dict] = []
+    for day_offset in range(29, -1, -1):
+        day_start = (now - timedelta(days=day_offset)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        day_end = day_start + timedelta(days=1)
+        day_logs = []
+        for mid in monitor_ids:
+            day_logs += (
+                db.query(MonitorLog)
+                .filter(
+                    MonitorLog.monitor_id == mid,
+                    MonitorLog.checked_at >= day_start,
+                    MonitorLog.checked_at < day_end,
+                )
+                .all()
+            )
+        total = len(day_logs)
+        up = sum(1 for l in day_logs if l.is_up)
+        uptime_pct = round((up / total * 100) if total else 100.0, 2)
+        uptime_trend.append(
+            {
+                "date": day_start.strftime("%Y-%m-%d"),
+                "uptime_pct": uptime_pct,
+                "total_checks": total,
+            }
+        )
+
+    # ── incident_trend: last 30 days, one count per day ────────────────────
+    incident_trend: list[dict] = []
+    if monitor_ids:
+        incidents_30 = (
+            db.query(Incident)
+            .filter(
+                Incident.monitor_id.in_(monitor_ids),
+                Incident.outage_start_time >= since_30,
+            )
+            .all()
+        )
+        day_counts: dict[str, int] = {}
+        for inc in incidents_30:
+            start = inc.outage_start_time
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=timezone.utc)
+            day_key = start.strftime("%Y-%m-%d")
+            day_counts[day_key] = day_counts.get(day_key, 0) + 1
+        for day_offset in range(29, -1, -1):
+            day_label = (now - timedelta(days=day_offset)).strftime("%Y-%m-%d")
+            incident_trend.append(
+                {"date": day_label, "incident_count": day_counts.get(day_label, 0)}
+            )
+    else:
+        for day_offset in range(29, -1, -1):
+            day_label = (now - timedelta(days=day_offset)).strftime("%Y-%m-%d")
+            incident_trend.append({"date": day_label, "incident_count": 0})
+
+    # ── top_failing: top 5 monitors by incident count in last 30 days ──────
+    top_failing: list[dict] = []
+    if monitor_ids:
+        inc_counts: dict[int, int] = {}
+        for inc in incidents_30:  # type: ignore[possibly-undefined]
+            inc_counts[inc.monitor_id] = inc_counts.get(inc.monitor_id, 0) + 1
+        sorted_ids = sorted(inc_counts, key=lambda mid: inc_counts[mid], reverse=True)[:5]
+        for mid in sorted_ids:
+            top_failing.append(
+                {
+                    "monitor_id": mid,
+                    "monitor_name": monitor_name_map.get(mid, "Unknown"),
+                    "incident_count": inc_counts[mid],
+                }
+            )
+
+    # ── member_activity: audit log count per user in last 30 days ──────────
+    member_activity: list[dict] = []
+    if member_user_ids:
+        activity_logs = (
+            db.query(AuditLog)
+            .filter(
+                AuditLog.user_id.in_(member_user_ids),
+                AuditLog.created_at >= since_30,
+            )
+            .all()
+        )
+        user_counts: dict[int, int] = {}
+        for log in activity_logs:
+            if log.user_id:
+                user_counts[log.user_id] = user_counts.get(log.user_id, 0) + 1
+        for uid in member_user_ids:
+            u = db.query(User).filter(User.id == uid).first()
+            member_activity.append(
+                {
+                    "user_id": uid,
+                    "user_name": u.name if u else "Unknown",
+                    "action_count": user_counts.get(uid, 0),
+                }
+            )
+        member_activity.sort(key=lambda x: x["action_count"], reverse=True)
+
+    return {
+        "uptime_trend": uptime_trend,
+        "incident_trend": incident_trend,
+        "top_failing": top_failing,
+        "member_activity": member_activity,
+    }
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────

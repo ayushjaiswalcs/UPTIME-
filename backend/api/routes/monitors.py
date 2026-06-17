@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from typing import List
 from datetime import datetime, timedelta, timezone
+from core.audit import log_action
 from core.deps import get_db, get_current_user
 from core.monitoring import check_monitor
 
@@ -46,6 +47,15 @@ def create_monitor(
 ):
     monitor = Monitor(user_id=current_user.id, **data.model_dump())
     db.add(monitor)
+    db.flush()
+    log_action(
+        db,
+        user_id=current_user.id,
+        action="monitor.create",
+        resource_type="monitor",
+        resource_id=monitor.id,
+        details={"name": monitor.monitor_name, "type": monitor.monitor_type, "url": monitor.target_url},
+    )
     db.commit()
     db.refresh(monitor)
     logger.info("Monitor created id=%s name=%r type=%s by user=%s", monitor.id, monitor.monitor_name, monitor.monitor_type, current_user.id)
@@ -84,6 +94,14 @@ def delete_monitor(monitor_id: int, db: Session = Depends(get_db), current_user:
     monitor = db.query(Monitor).filter(Monitor.id == monitor_id, Monitor.user_id == current_user.id).first()
     if not monitor:
         raise HTTPException(status_code=404, detail="Monitor not found")
+    log_action(
+        db,
+        user_id=current_user.id,
+        action="monitor.delete",
+        resource_type="monitor",
+        resource_id=monitor_id,
+        details={"name": monitor.monitor_name, "url": monitor.target_url},
+    )
     db.delete(monitor)
     db.commit()
 

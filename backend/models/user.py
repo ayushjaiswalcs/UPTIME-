@@ -35,7 +35,7 @@ class User(Base):
     last_login_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    monitors = relationship("Monitor", back_populates="user", cascade="all, delete-orphan")
+    monitors = relationship("Monitor", foreign_keys="Monitor.user_id", back_populates="user", cascade="all, delete-orphan")
     notifications = relationship("Notification", back_populates="user", cascade="all, delete-orphan")
     status_pages = relationship("StatusPage", back_populates="user", cascade="all, delete-orphan")
     api_keys = relationship("ApiKey", back_populates="user", cascade="all, delete-orphan")

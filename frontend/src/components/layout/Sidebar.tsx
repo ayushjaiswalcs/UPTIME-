@@ -16,8 +16,9 @@ const navItems = [
 ]
 
 const teamItems = [
-  { to: '/teams',       icon: Users,           label: 'Teams'       },
-  { to: '/maintenance', icon: Wrench,          label: 'Maintenance' },
+  { to: '/teams',         icon: Users,     label: 'Teams'        },
+  { to: '/org-analytics', icon: BarChart2, label: 'Org Analytics'},
+  { to: '/maintenance',   icon: Wrench,    label: 'Maintenance'  },
 ]
 
 const devItems = [

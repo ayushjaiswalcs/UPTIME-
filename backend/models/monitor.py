@@ -9,6 +9,8 @@ class Monitor(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True)
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     monitor_name = Column(String(255), nullable=False)
     target_url = Column(Text, nullable=False)
     monitor_type = Column(String(50), default="http")  # http, tcp, ping, ssl
@@ -29,6 +31,6 @@ class Monitor(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     last_checked_at = Column(DateTime(timezone=True), nullable=True)
 
-    user = relationship("User", back_populates="monitors")
+    user = relationship("User", foreign_keys=[user_id], back_populates="monitors")
     logs = relationship("MonitorLog", back_populates="monitor", cascade="all, delete-orphan")
     incidents = relationship("Incident", back_populates="monitor", cascade="all, delete-orphan")

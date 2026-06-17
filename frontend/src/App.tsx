@@ -27,6 +27,7 @@ import ApiKeys from './pages/ApiKeys'
 import Maintenance from './pages/Maintenance'
 import AuditLogs from './pages/AuditLogs'
 import Webhooks from './pages/Webhooks'
+import OrgAnalytics from './pages/OrgAnalytics'
 import Demo from './pages/Demo'
 import Layout from './components/layout/Layout'
 
@@ -88,8 +89,9 @@ function AppRoutes() {
           ['/teams',        <Teams />],
           ['/api-keys',     <ApiKeys />],
           ['/maintenance',  <Maintenance />],
-          ['/audit-logs',   <AuditLogs />],
-          ['/webhooks',     <Webhooks />],
+          ['/audit-logs',    <AuditLogs />],
+          ['/webhooks',      <Webhooks />],
+          ['/org-analytics', <OrgAnalytics />],
         ] as [string, React.ReactNode][]
       ).map(([path, page]) => (
         <Route
